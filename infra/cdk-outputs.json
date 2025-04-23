@@ -1,0 +1,6 @@
+{
+  "ThermalMetricsStack": {
+    "FunctionUrl": "https://j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws/",
+    "BucketName": "thermalmetricsstack-thermalimagebucketa54b9fe3-kqbyehlzctjb"
+  }
+}
