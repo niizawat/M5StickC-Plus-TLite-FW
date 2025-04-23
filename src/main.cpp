@@ -7,6 +7,8 @@
 #include <esp_sntp.h>
 #include <esp_wifi.h>
 #include <driver/gpio.h>
+#include <WiFiClientSecure.h>
+#include "AmazonRootCA1.h"
 
 #include <vector>
 
@@ -37,7 +39,7 @@ auto& display = M5.Display;
 screenshot_streamer_t screenshot_holder;
 draw_param_t draw_param;
 
-static constexpr const char* cloud_server_name = "ezdata.m5stack.com";
+static constexpr const char* cloud_server_name = "j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws";
 
 static constexpr const char* ntp_server[] = {"0.pool.ntp.org", "1.pool.ntp.org",
                                              "2.pool.ntp.org"};
@@ -3395,9 +3397,10 @@ static void cloudTask(void*) {
                                                 timeout = timeout * 3 >> 1;
                                             } while (timeout <= 8192);
                         //*/
-                        WiFiClient wifi_client;
+                        WiFiClientSecure wifi_client;
+                        wifi_client.setCACert(amazon_root_ca);
                         // ESP_EARLY_LOGD("DEBUG","CLOUD 1");
-                        if (1 == wifi_client.connect(draw_param.cloud_ip, 80,
+                        if (1 == wifi_client.connect(draw_param.cloud_ip, 443,
                                                      6144)) {
                             wifi_client.setTimeout(5);
                             wifi_client.setNoDelay(true);
@@ -3405,7 +3408,7 @@ static void cloudTask(void*) {
                             draw_param.cloud_status =
                                 draw_param.cloud_status_t::cloud_uploading;
                             wifi_client.print(
-                                "POST /api/M5StickT-Lite-Data/ HTTP/1.1\r\n"
+                                "POST / HTTP/1.1\r\n"
                                 "Accept: */*\r\n"
                                 "Connection: keep-alive\r\n"
                                 "Content-Type: application/json; "
@@ -3414,14 +3417,14 @@ static void cloudTask(void*) {
                                 "Origin: null\r\n"
                                 "User-Agent: ESP32\r\n");
                             wifi_client.printf(
-                                "Host: %s:80\r\nContent-Length: %d\r\n\r\n",
+                                "Host: %s:443\r\nContent-Length: %d\r\n\r\n",
                                 cloud_server_name, json_frame.length());
                             // ESP_EARLY_LOGD("DEBUG","CLOUD 3");
                             size_t len = json_frame.length();
                             auto p     = json_frame.c_str();
                             do {
                                 size_t l = 1436 < len ? 1436 : len;
-                                if (l != wifi_client.write(p, l)) {
+                                if (l != wifi_client.write((uint8_t*)p, l)) {
                                     break;
                                 }
                                 // ESP_EARLY_LOGD("DEBUG","remain:%d", len);
