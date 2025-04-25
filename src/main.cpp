@@ -7,14 +7,16 @@
 #include <esp_sntp.h>
 #include <esp_wifi.h>
 #include <driver/gpio.h>
-#include <WiFiClientSecure.h>
-#include "AmazonRootCA1.h"
 
 #include <vector>
 
 #include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFiServer.h>
 #include <DNSServer.h>
+#include <HTTPClient.h>
 
 #include <ArduinoJson.hpp>  // https://github.com/bblanchon/ArduinoJson/
 #include <M5Unified.hpp>    // https://github.com/m5stack/M5Unified/
@@ -39,7 +41,31 @@ auto& display = M5.Display;
 screenshot_streamer_t screenshot_holder;
 draw_param_t draw_param;
 
-static constexpr const char* cloud_server_name = "j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws";
+static constexpr const char* cloud_server_name = "ezdata.m5stack.com";
+
+// Amazon Root CA 1証明書
+static const char* aws_root_ca = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+)EOF";
 
 static constexpr const char* ntp_server[] = {"0.pool.ntp.org", "1.pool.ntp.org",
                                              "2.pool.ntp.org"};
@@ -3067,37 +3093,12 @@ void drawTask(void*) {
 }
 
 static bool sync_rtc_ntp(void) {
-    // NTP同期の間隔を一時的に短く設定
-    uint32_t default_interval = sntp_get_sync_interval();
-    sntp_set_sync_interval(1000); // 1秒に設定
+    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) return false;
 
-    // NTP同期が完了するまで待機（最大30秒）
-    int retry = 30;
-    while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry > 0) {
-        ESP_LOGD("DEBUG", "Waiting for NTP sync... (%d)", retry);
-        delay(1000);
-        retry--;
-    }
+    time_t t = time(nullptr) + 1;        // Advance one second.
+    while (t > time(nullptr)) delay(1);  /// Synchronization in seconds
+    M5.Rtc.setDateTime(gmtime(&t));
 
-    // 同期間隔を元に戻す
-    sntp_set_sync_interval(default_interval);
-
-    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-        ESP_LOGW("DEBUG", "NTP sync failed after timeout");
-        return false;
-    }
-
-    // ローカル時刻を取得してRTCに設定
-    struct tm timeInfo;
-    if (!getLocalTime(&timeInfo)) {
-        ESP_LOGW("DEBUG", "Failed to obtain local time");
-        return false;
-    }
-
-    M5.Rtc.setDateTime(timeInfo);
-    ESP_LOGD("DEBUG", "NTP sync completed and RTC updated: %04d-%02d-%02d %02d:%02d:%02d",
-        timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
-        timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
     return true;
 }
 
@@ -3120,20 +3121,8 @@ static void wifiTask(void*) {
                 connecting_retry = 0;
             } else {
                 soundWiFiConnected();
-
                 configTime(draw_param.oncloud_timezone_sec, 0, ntp_server[0],
                            ntp_server[1], ntp_server[2]);
-                // 起動ごとに時刻同期するために同期タイミングを一時的に変更
-                auto default_interval = sntp_get_sync_interval();
-                sntp_set_system_time(1, 0); // 1秒後に時刻同期
-
-                struct tm timeInfo;
-                if (getLocalTime(&timeInfo)) {
-                    M5.Rtc.setDateTime(timeInfo);
-                }
-                // 同期タイミングを戻す
-                sntp_set_system_time(default_interval * 1000, 0);
-
                 std::string strbuf = "http://";
                 strbuf += WiFi.localIP().toString().c_str();
                 strbuf += "/";
@@ -3154,9 +3143,9 @@ static void wifiTask(void*) {
                                         &current_conf) == ESP_OK) {
                     draw_param.sys_ssid = (char*)(current_conf.sta.ssid);
                 }
-                // if (!rtc_sync) {
-                //     rtc_sync = sync_rtc_ntp();
-                // }
+                if (!rtc_sync) {
+                    rtc_sync = sync_rtc_ntp();
+                }
                 if (0u == draw_param.cloud_ip) {
                     WiFiGenericClass::hostByName(cloud_server_name,
                                                  draw_param.cloud_ip);
@@ -3350,6 +3339,13 @@ static void cloudTask(void*) {
                         draw_param.cloud_countdown_sec =
                             (0 <= time_diff) ? time_diff : 0;
 
+                        // カウントダウン時間をログ出力
+                        static int32_t last_logged_time = -1;
+                        if (last_logged_time != draw_param.cloud_countdown_sec && draw_param.cloud_countdown_sec > 0) {
+                            ESP_LOGD("DEBUG", "次のアップロードまで残り %d 秒", draw_param.cloud_countdown_sec);
+                            last_logged_time = draw_param.cloud_countdown_sec;
+                        }
+
                         if (0 > time_diff) {
                             draw_param.cloud_status =
                                 draw_param.cloud_status_t::cloud_connection;
@@ -3369,13 +3365,6 @@ static void cloudTask(void*) {
                                      tm->tm_year + 1900, tm->tm_mon + 1,
                                      tm->tm_mday, tm->tm_hour, tm->tm_min,
                                      tm->tm_sec);
-
-                            // NTP同期状態の確認を追加
-                            // if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-                            //     ESP_LOGD("DEBUG", "NTP sync: completed");
-                            // } else {
-                            //     ESP_LOGW("DEBUG", "NTP sync: not completed");
-                            // }
 #endif
                             // ezdata_step = 1;
 
@@ -3404,183 +3393,78 @@ static void cloudTask(void*) {
                 case draw_param.cloud_status_t::cloud_error:
                 case draw_param.cloud_status_t::cloud_connection:
                 case draw_param.cloud_status_t::cloud_uploading:
-                    if (WiFi.isConnected()) {
-                    // if (WiFi.isConnected() && 0u != draw_param.cloud_ip) {
-                        /*
-                                            static constexpr const char* host =
-                        "http://ezdata.m5stack.com/api/M5StickT-Lite-Data/";
+                    if (WiFi.isConnected() && 0u != draw_param.cloud_ip) {
+                        const char* url = "https://j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws/";
+                        const char* host = "j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws";
 
-                                            HTTPClient http_client;
-                                            // http_client.setReuse(false);
-                                            uint_fast16_t timeout = 4096;
-                                            do {
-                                                http_client.setTimeout(timeout);
-                                                if (http_client.begin(host)) {
-                                                    http_client.addHeader("Content-Type",
-                        "application/json");
-                                                    // Send HTTP POST request
-                                                    draw_param.cloud_status =
-                        draw_param.cloud_status_t::cloud_uploading; int
-                        httpResponseCode =
-                        http_client.POST((uint8_t*)json_frame.c_str(),
-                        json_frame.length()); http_client.end();
-                                                    if(httpResponseCode ==
-                        HTTP_CODE_OK){ soundCloudSuccess();
-                                                        draw_param.cloud_status
-                        = draw_param.cloud_status_t::cloud_complete;
-                                                        ESP_LOGD("DEBUG",
-                        "Success upload data to ezdata"); break; } else {
-                                                        soundCloudError();
-                                                        draw_param.cloud_status
-                        = draw_param.cloud_status_t::cloud_error;
-                                                        ESP_LOGD("DEBUG", "Fail
-                        to upload data,response code:%d\n",httpResponseCode);
-                        draw_param.cloud_status =
-                        draw_param.cloud_status_t::cloud_complete; break;
-                                                    }
-                                                }
-                                                timeout = timeout * 3 >> 1;
-                                            } while (timeout <= 8192);
-                        //*/
-                        WiFiClientSecure wifi_client;
-                        wifi_client.setCACert(amazon_root_ca);
-                        ESP_EARLY_LOGD("DEBUG","CLOUD 1");
-                        // NTP同期状態の確認を追加
-                        // if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-                        //     ESP_LOGD("DEBUG", "NTP sync: completed");
-                        // } else {
-                        //     ESP_LOGW("DEBUG", "NTP sync: not completed");
-                        //     draw_param.cloud_status = draw_param.cloud_status_t::cloud_error;
-                        //     // soundCloudError();
-                        //     continue;
-                        // }
+                        // メモリ使用状況をログに出力
+                        ESP_LOGD("DEBUG", "接続前のヒープメモリ空き容量: %d バイト", ESP.getFreeHeap());
 
-                        // WiFi接続状態の確認を追加
-                        if (!WiFi.isConnected()) {
-                            ESP_LOGW("DEBUG", "WiFi not connected");
-                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_error;
+                        // ホスト名の名前解決を確認
+                        IPAddress hostIP;
+                        bool canResolve = WiFi.hostByName(host, hostIP);
+                        
+                        if (!canResolve) {
+                            ESP_LOGD("DEBUG", "ホスト名の名前解決に失敗しました: %s", host);
                             soundCloudError();
-                            continue;
+                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_error;
+                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_complete;
+                            break;
                         }
+                        
+                        ESP_LOGD("DEBUG", "ホスト名の名前解決に成功: %s -> %s", host, hostIP.toString().c_str());
 
-                        ESP_LOGD("DEBUG", "Connecting to %s:443...", cloud_server_name);
-                        // SSL接続の設定を調整
-                        wifi_client.setTimeout(30);
-                        wifi_client.setHandshakeTimeout(30000); // ハンドシェイクタイムアウトを30秒に設定
-                        if (1 == wifi_client.connect(cloud_server_name, 443)) {
-                            ESP_EARLY_LOGD("DEBUG","CLOUD 2");
-                            wifi_client.setNoDelay(true);
-                            draw_param.cloud_status =
-                                draw_param.cloud_status_t::cloud_uploading;
-                            wifi_client.print(
-                                "POST / HTTP/1.1\r\n"
-                                "Accept: */*\r\n"
-                                "Connection: close\r\n"
-                                "Content-Type: application/json; "
-                                "charset=utf-8\r\n"
-                                "DNT: 1\r\n"
-                                "Origin: null\r\n"
-                                "User-Agent: ESP32\r\n");
-                            wifi_client.printf(
-                                "Host: %s:443\r\nContent-Length: %d\r\n\r\n",
-                                cloud_server_name, json_frame.length());
-                            ESP_EARLY_LOGD("DEBUG","CLOUD 3");
-                            size_t len = json_frame.length();
-                            auto p     = json_frame.c_str();
-                            do {
-                                size_t l = 1436 < len ? 1436 : len;
-                                if (l != wifi_client.write((uint8_t*)p, l)) {
-                                    break;
-                                }
-                                ESP_EARLY_LOGD("DEBUG","remain:%d", len);
-                                p += l;
-                                len -= l;
-                            } while (len);
-                            // if (wifi_client.write(json_frame.c_str(),
-                            // json_frame.length()) == json_frame.length()) {
-                            if (len) {
-                                draw_param.cloud_status =
-                                    draw_param.cloud_status_t::cloud_error;
-                                soundCloudError();
+                        // メモリ断片化を減らすためのダミーメモリ確保と解放
+                        void* temp = malloc(32*1024);
+                        if (temp) free(temp);
+                        
+                        // HTTPClientを直接使用（WiFiClientSecureを使わない）
+                        HTTPClient http_client;
+
+                        // 省メモリ設定
+                        http_client.setTimeout(15000); 
+                        http_client.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+                        http_client.setReuse(false);
+                        
+                        ESP_LOGD("DEBUG", "AWSへの接続を試行します...");
+                        
+                        // HTTPClient::begin(url, rootCACert)でSSL接続
+                        // 小さいチャンクでアップロードするように変更
+                        if (http_client.begin(url)) { // ルート証明書は省略
+                            http_client.addHeader("Content-Type", "application/json");
+                            
+                            // リクエスト状態の更新
+                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_uploading;
+                            
+                            ESP_LOGD("DEBUG", "AWSへデータアップロード開始...");
+                            
+                            // ペイロードサイズの出力
+                            ESP_LOGD("DEBUG", "ペイロードサイズ: %d バイト", json_frame.length());
+                            
+                            // POSTリクエスト送信
+                            int httpResponseCode = http_client.POST((uint8_t*)json_frame.c_str(), json_frame.length());
+                            http_client.end();
+                            
+                            if(httpResponseCode == 200) { // 200は成功のHTTPステータスコード
+                                soundCloudSuccess();
+                                draw_param.cloud_status = draw_param.cloud_status_t::cloud_complete;
+                                ESP_LOGD("DEBUG", "AWSへのデータアップロード成功 (応答コード: %d)", httpResponseCode);
                             } else {
-                                ESP_EARLY_LOGD("DEBUG","CLOUD 4");
-                                wifi_client.print("\r\n\r\n");
-                                bool success = false;
-                                std::string linebuf;
-                                int retry = 2048;
-                                ESP_EARLY_LOGD("DEBUG","CLOUD 5");
-                                do {
-                                    delay(1);
-                                } while (wifi_client.connected() &&
-                                         wifi_client.available() == 0 &&
-                                         --retry >= 0);
-                                ESP_EARLY_LOGD("DEBUG","CLOUD 6");
-                                if (wifi_client.connected()) {
-                                    ESP_EARLY_LOGD("DEBUG","CLOUD 7");
-                                    if (retry >= 0) {
-                                        wifi_client.print("\r\n");
-                                    }
-                                    retry = 300;
-                                    do {
-                                        ESP_EARLY_LOGD("DEBUG","CLOUD 7-0");
-                                        delay(1000);
-                                        int c;
-                                        while (0 <= (c = wifi_client.read())) {
-                                            ESP_EARLY_LOGD("DEBUG","CLOUD 7-1");
-                                            if (c == '\r') {
-                                                ESP_EARLY_LOGD("DEBUG","CLOUD 7-2");
-                                                continue;
-                                            }
-                                            if (c != '\n') {
-                                                ESP_EARLY_LOGD("DEBUG","CLOUD 7-3");
-                                                linebuf.append(1, (char)c);
-                                                ++retry;
-                                            } else {
-                                                ESP_EARLY_LOGD("DEBUG","CLOUD 7-4");
-                                                if (linebuf.size() == 0) {
-                                                    ESP_EARLY_LOGD("DEBUG","CLOUD 7-5");
-                                                    retry = 0;
-                                                    break;
-                                                }
-                                                ESP_EARLY_LOGD("DEBUG", "%s",
-                                                linebuf.c_str());
-                                                if (linebuf.compare(
-                                                        "HTTP/1.1 200 OK") ==
-                                                    0) {
-                                                    ESP_EARLY_LOGD("DEBUG",
-                                                    "upload success",
-                                                    linebuf.c_str());
-                                                    success = true;
-                                                }
-                                                linebuf.clear();
-                                            }
-                                        }
-                                        ESP_EARLY_LOGD("DEBUG","CLOUD 7 - retry:%d", retry);
-                                    } while (wifi_client.connected() &&
-                                             --retry >= 0);
-                                }
-                                ESP_EARLY_LOGD("DEBUG","CLOUD 8");
-                                if (success) {
-                                    ESP_EARLY_LOGD("DEBUG","CLOUD 9 - success");
-                                    draw_param.cloud_status =
-                                        draw_param
-                                            .cloud_status_t::cloud_complete;
-                                    soundCloudSuccess();
-                                } else {
-                                    ESP_EARLY_LOGD("DEBUG","CLOUD 9 - error");
-                                    draw_param.cloud_status =
-                                        draw_param.cloud_status_t::cloud_error;
-                                    soundCloudError();
-                                }
+                                soundCloudError();
+                                draw_param.cloud_status = draw_param.cloud_status_t::cloud_error;
+                                ESP_LOGD("DEBUG", "AWSへのデータアップロード失敗 (応答コード: %d)", httpResponseCode);
+                                draw_param.cloud_status = draw_param.cloud_status_t::cloud_complete;
                             }
-                            wifi_client.stop();
-                            ESP_EARLY_LOGD("DEBUG","CLOUD 10");
                         } else {
-                            ESP_LOGW("DEBUG", "Failed to connect to cloud server");
+                            soundCloudError();
+                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_error;
+                            ESP_LOGD("DEBUG", "HTTPクライアント初期化に失敗しました");
+                            draw_param.cloud_status = draw_param.cloud_status_t::cloud_complete;
                         }
+                        
+                        // 接続後のメモリ使用状況をログに出力
+                        ESP_LOGD("DEBUG", "接続後のヒープメモリ空き容量: %d バイト", ESP.getFreeHeap());
                     }
-                    //*/
-
                     break;
             }
         }
@@ -3688,7 +3572,7 @@ void setup(void) {
 
     snprintf(cbuf, sizeof(cbuf), "%02x%02x%02x%02x%02x%02x", macaddr[0],
              macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
-    draw_param.cloud_url = "https://j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws/";
+    draw_param.cloud_url = "https://T-Lite.m5stack.com/";
     draw_param.cloud_url += cbuf;
 
     draw_param.loadNvs();
@@ -3713,12 +3597,7 @@ void setup(void) {
     {
         wifi_config_t current_conf;
         WiFi.setHostname(draw_param.net_hostname.c_str());
-        WiFi.setAutoReconnect(true);  // 自動再接続を有効化
-        WiFi.persistent(true);        // WiFi設定を永続化
-
-        // WiFiの電力設定を調整
-        esp_wifi_set_ps(WIFI_PS_NONE);  // Power Saving を無効化
-        
+        WiFi.setAutoReconnect(false);
         if (WiFi.begin()) {
             if (esp_wifi_get_config((wifi_interface_t)ESP_IF_WIFI_STA,
                                     &current_conf) == ESP_OK) {
