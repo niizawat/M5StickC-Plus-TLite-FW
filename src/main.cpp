@@ -3397,6 +3397,30 @@ static void cloudTask(void*) {
                         const char* url = "https://j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws/";
                         const char* host = "j523matawle72pc35iu4nhyxbq0bmxhj.lambda-url.us-east-1.on.aws";
 
+                        // 現在のRTC時刻をログに出力
+                        {
+                            time_t now = time(nullptr);
+                            auto tm_local = localtime(&now);
+                            auto tm_gmt = gmtime(&now);
+                            
+                            ESP_LOGD("DEBUG", "アップロード前のRTC時刻（ローカル）: %04d/%02d/%02d %02d:%02d:%02d",
+                                    tm_local->tm_year + 1900, tm_local->tm_mon + 1, tm_local->tm_mday,
+                                    tm_local->tm_hour, tm_local->tm_min, tm_local->tm_sec);
+                            
+                            ESP_LOGD("DEBUG", "アップロード前のRTC時刻（GMT）: %04d/%02d/%02d %02d:%02d:%02d",
+                                    tm_gmt->tm_year + 1900, tm_gmt->tm_mon + 1, tm_gmt->tm_mday,
+                                    tm_gmt->tm_hour, tm_gmt->tm_min, tm_gmt->tm_sec);
+                            
+                            // NTP同期状態の確認
+                            const char* sync_status_text = "未同期";
+                            switch(sntp_get_sync_status()) {
+                                case SNTP_SYNC_STATUS_COMPLETED: sync_status_text = "同期完了"; break;
+                                case SNTP_SYNC_STATUS_IN_PROGRESS: sync_status_text = "同期中"; break;
+                                case SNTP_SYNC_STATUS_RESET: sync_status_text = "未同期"; break;
+                            }
+                            ESP_LOGD("DEBUG", "NTP同期状態: %s", sync_status_text);
+                        }
+
                         // メモリ使用状況をログに出力
                         ESP_LOGD("DEBUG", "接続前のヒープメモリ空き容量: %d バイト", ESP.getFreeHeap());
 
@@ -3440,10 +3464,16 @@ static void cloudTask(void*) {
                             
                             // ペイロードサイズの出力
                             ESP_LOGD("DEBUG", "ペイロードサイズ: %d バイト", json_frame.length());
+
+                            bool auto_reconnect = WiFi.getAutoReconnect();
+                            WiFi.setAutoReconnect(true);
                             
                             // POSTリクエスト送信
                             int httpResponseCode = http_client.POST((uint8_t*)json_frame.c_str(), json_frame.length());
                             http_client.end();
+
+                            WiFi.setAutoReconnect(auto_reconnect);
+
                             
                             if(httpResponseCode == 200) { // 200は成功のHTTPステータスコード
                                 soundCloudSuccess();
